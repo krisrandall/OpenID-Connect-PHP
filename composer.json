@@ -1,5 +1,5 @@
 {
-    "name": "jumbojett/openid-connect-php",
+    "name": "krisrandall/openid-connect-with-client-credentials-php",
     "description": "Bare-bones OpenID Connect client",
     "require": {
         "php": ">=5.2",

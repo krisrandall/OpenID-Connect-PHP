@@ -1,3 +1,15 @@
+# Forked Version
+
+This version has been forked so as to add the Client Credentials connect flow endpoint 
+
+Just a call like this :
+
+`curl https://myserver.com/connect/token -d 'grant_type=client_credentials&client_id=12345&client_secret=my_secret&scope=scope'`
+
+which returns a client credentials token.
+
+
+
 PHP OpenID Connect Basic Client
 ========================
 A simple library that allows an application to authenticate a user through the basic OpenID Connect flow.
