@@ -2,7 +2,7 @@
 
 /**
  *
- * Copyright MITRE 2016
+ * Copyright MITRE 2017
  *
  * OpenIDConnectClient for PHP5
  * Author: Michael Jett <mjett@mitre.org>
@@ -37,8 +37,8 @@ if (!isset($_SESSION)) {
  * It can be downloaded from: http://phpseclib.sourceforge.net/
  */
 
-if (!class_exists('\phpseclib\Crypt\RSA')) {
-    user_error('Unable to find phpseclib Crypt/RSA.php.  Ensure phpseclib is installed and in include_path');
+if (!class_exists('\phpseclib\Crypt\RSA') && !class_exists('Crypt_RSA')) {
+    user_error('Unable to find phpseclib Crypt/RSA.php.  Ensure phpseclib is installed and in include_path before you include this file');
 }
 
 /**
@@ -121,6 +121,16 @@ class OpenIDConnectClient
      * @var string full system path to the SSL certificate
      */
     private $certPath;
+    
+    /**
+     * @var bool Verify SSL peer on transactions
+     */
+    private $verifyPeer = true;
+    
+    /**
+     * @var bool Verify peer hostname on transactions
+     */
+    private $verifyHost = true;
 
     /**
      * @var string if we aquire an access token it will be stored here
@@ -202,7 +212,8 @@ class OpenIDConnectClient
 
         // Do a preemptive check to see if the provider has thrown an error from a previous redirect
         if (isset($_REQUEST['error'])) {
-            throw new OpenIDConnectClientException("Error: " . $_REQUEST['error'] . " Description: " . $_REQUEST['error_description']);
+            $desc = isset($_REQUEST['error_description']) ? " Description: " . $_REQUEST['error_description'] : "";
+            throw new OpenIDConnectClientException("Error: " . $_REQUEST['error'] .$desc);
         }
 
         // If we have an authorization code then proceed to request a token
@@ -235,6 +246,9 @@ class OpenIDConnectClient
 
             // Verify the signature
             if ($this->canVerifySignatures()) {
+		if (!$this->getProviderConfigValue('jwks_uri')) {
+                    throw new OpenIDConnectClientException ("Unable to verify signature due to no jwks_uri being defined");
+                }
                 if (!$this->verifyJWTsignature($token_json->id_token)) {
                     throw new OpenIDConnectClientException ("Unable to verify signature");
                 }
@@ -300,7 +314,7 @@ class OpenIDConnectClient
                 'post_logout_redirect_uri' => $redirect);
         }
 
-        $signout_endpoint  .= '?' . http_build_query( $signout_params, null, '&');
+        $signout_endpoint  .= (strpos($signout_endpoint, '?') === false ? '?' : '&') . http_build_query( $signout_params, null, '&');
         $this->redirect($signout_endpoint);
     }
 
@@ -436,7 +450,6 @@ class OpenIDConnectClient
 
         $auth_params = array_merge($this->authParams, array(
             'response_type' => $response_type,
-            'response_mode' => "form_post",
             'redirect_uri' => $this->getRedirectURL(),
             'client_id' => $this->clientID,
             'nonce' => $nonce,
@@ -454,7 +467,7 @@ class OpenIDConnectClient
             $auth_params = array_merge($auth_params, array('response_type' => implode(' ', $this->responseTypes)));
         }
         
-        $auth_endpoint .= '?' . http_build_query($auth_params, null, '&');
+        $auth_endpoint .= (strpos($auth_endpoint, '?') === false ? '?' : '&') . http_build_query($auth_params, null, '&');
 
         session_commit();
         $this->redirect($auth_endpoint);
@@ -582,7 +595,7 @@ class OpenIDConnectClient
      * @return bool
      */
     private function verifyRSAJWTsignature($hashtype, $key, $payload, $signature) {
-        if (!class_exists('\phpseclib\Crypt\RSA')) {
+        if (!class_exists('\phpseclib\Crypt\RSA') && !class_exists('Crypt_RSA')) {
             throw new OpenIDConnectClientException('Crypt_RSA support unavailable.');
         }
         if (!(property_exists($key, 'n') and property_exists($key, 'e'))) {
@@ -596,10 +609,17 @@ class OpenIDConnectClient
             "  <Modulus>" . b64url2b64($key->n) . "</Modulus>\r\n" .
             "  <Exponent>" . b64url2b64($key->e) . "</Exponent>\r\n" .
             "</RSAKeyValue>";
-        $rsa = new \phpseclib\Crypt\RSA();
-        $rsa->setHash($hashtype);
-        $rsa->loadKey($public_key_xml, \phpseclib\Crypt\RSA::PUBLIC_FORMAT_XML);
-        $rsa->signatureMode = \phpseclib\Crypt\RSA::SIGNATURE_PKCS1;
+	if(class_exists('Crypt_RSA')) {
+        	$rsa = new Crypt_RSA();
+		$rsa->setHash($hashtype);
+        	$rsa->loadKey($public_key_xml, Crypt_RSA::PUBLIC_FORMAT_XML);
+        	$rsa->signatureMode = Crypt_RSA::SIGNATURE_PKCS1;
+	} else {
+		$rsa = new \phpseclib\Crypt\RSA();
+		$rsa->setHash($hashtype);
+        	$rsa->loadKey($public_key_xml, \phpseclib\Crypt\RSA::PUBLIC_FORMAT_XML);
+        	$rsa->signatureMode = \phpseclib\Crypt\RSA::SIGNATURE_PKCS1;
+	}
         return $rsa->verify($payload, $signature);
     }
 
@@ -654,11 +674,10 @@ class OpenIDConnectClient
         return (($claims->iss == $this->getProviderURL())
             && (($claims->aud == $this->clientID) || (in_array($this->clientID, $claims->aud)))
             && ( (!$this->getNonce()) || ($claims->nonce == $this->getNonce()) )
-            && ( !isset($claims->exp) || $claims->exp > time())
-            && ( !isset($claims->nbf) || $claims->nbf < time())
+            && ( !isset($claims->exp) || $claims->exp >= time())
+            && ( !isset($claims->nbf) || $claims->nbf <= time())
             && ( !isset($claims->at_hash) || $claims->at_hash == $expecte_at_hash )
         );
-
     }
 	
     /**
@@ -790,13 +809,21 @@ class OpenIDConnectClient
          * Otherwise ignore SSL peer verification
          */
         if (isset($this->certPath)) {
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
             curl_setopt($ch, CURLOPT_CAINFO, $this->certPath);
-        } else {
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
         }
-
+        
+        if($this->verifyHost) {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+        } else {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+        }
+        
+        if($this->verifyPeer) {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        } else {
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);        
+        }
+        
         // Should cURL return or print out the data? (true = return, false = print)
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 
@@ -849,6 +876,20 @@ class OpenIDConnectClient
      */
     public function setCertPath($certPath) {
         $this->certPath = $certPath;
+    }
+    
+    /**
+     * @param bool $verifyPeer
+     */
+    public function setVerifyPeer($verifyPeer) {
+        $this->verifyPeer = $verifyPeer;
+    }
+    
+    /**
+     * @param bool $verifyHost
+     */
+    public function setVerifyHost($verifyHost) {
+        $this->verifyHost = $verifyHost;
     }
 
     /**
@@ -947,7 +988,7 @@ class OpenIDConnectClient
      * @return bool
      */
     public function canVerifySignatures() {
-      return class_exists('\phpseclib\Crypt\RSA');
+      return class_exists('\phpseclib\Crypt\RSA') || class_exists('Crypt_RSA');
     }
 
     /**
