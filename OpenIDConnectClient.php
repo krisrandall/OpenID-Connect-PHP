@@ -675,7 +675,8 @@ class OpenIDConnectClient
             && (($claims->aud == $this->clientID) || (in_array($this->clientID, $claims->aud)))
             && ( (!$this->getNonce()) || ($claims->nonce == $this->getNonce()) )
             && ( !isset($claims->exp) || $claims->exp >= time())
-            && ( !isset($claims->nbf) || $claims->nbf <= time())
+    /* KMOD : don't do this check :        && ( !isset($claims->nbf) || $claims->nbf <= time())   */
+    /*  This was failing on the Azure servers, with the nbf being a fraction of a second ahead of time */
             && ( !isset($claims->at_hash) || $claims->at_hash == $expecte_at_hash )
         );
     }
